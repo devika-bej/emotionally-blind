@@ -1,7 +1,9 @@
 import cv2
 import numpy as np
-import random
-import sys
+import os
+from PIL import Image
+import torch
+from torchvision import transforms
 
 from Hebbian_model import ImprovedHebbianFear
 
@@ -9,14 +11,39 @@ pos_angles = [45, 135, 225, 315]
 pos_dists = [200, 400, 600]
 
 current_verdict = "NEUTRAL"
+final_verdict = ""
 neutral_detected = False
 detected_frame_countdown = -1
 identified_frame_countdown = -1
 
 
-def update_verdict(masked_frame):
-    global current_verdict
-    current_verdict = random.choice(["NEUTRAL", "DETECTED", "IDENTIFIED"])
+def get_roi_patch(frame, center, size=128):
+    x, y = int(center[0]), int(center[1])
+    r = size // 2
+    h, w, _ = frame.shape
+    padded = cv2.copyMakeBorder(frame, r, r, r, r, cv2.BORDER_CONSTANT, value=0)
+    x_pad, y_pad = x + r, y + r
+    patch = padded[x_pad - r : x_pad + r, y_pad - r : y_pad + r]
+    return patch
+
+
+def update_verdict(masked_frame, center):
+    global current_verdict, final_verdict
+    model.eval()
+    torch.no_grad()
+    patch = get_roi_patch(masked_frame, center)
+    patch = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+    patch = Image.fromarray(patch)
+    fc_inp = preprocess(patch)
+    fear_score = model(fc_inp)
+    print(fear_score)
+    if fear_score < 0.3:
+        current_verdict = "NEUTRAL"
+    elif fear_score < 0.8:
+        current_verdict = "DETECTED"
+    else:
+        current_verdict = "IDENTIFIED"
+    final_verdict = current_verdict
     print(f"Stimulus was of category: {current_verdict}")
 
 
@@ -80,7 +107,7 @@ def mask_frame(frame):
                 masked_img[:, :, i] = frame[:, :, i] * mask
 
             # check if fearful
-            update_verdict(masked_img)
+            update_verdict(masked_img, gauss_center)
             # not fearful enough
             if current_verdict == "DETECTED":
                 detected_frame_countdown = 5
@@ -202,6 +229,32 @@ def main(input_video_path, output_video_path):
 
 
 if __name__ == "__main__":
-    input_video = sys.argv[1]
-    output_video = "output.mp4"
-    main(input_video, output_video)
+    global model, preprocess
+    model = ImprovedHebbianFear(64 * 64)
+    model.load_state_dict(torch.load("./fear_model_1080p(1).pth"))
+    preprocess = transforms.Compose(
+        [
+            transforms.Resize((64, 64)),
+            transforms.ToTensor(),
+            transforms.Lambda(lambda x: 1.0 - x),
+        ]
+    )
+
+    input_dir = "ib_dataset"
+    output_dir = "ib_dataset_output"
+    results_file = "results.txt"
+    os.makedirs(output_dir, exist_ok=True)
+    valid_exts = {".mp4", ".avi", ".mov", ".mkv"}
+
+    with open(results_file, "w") as f:
+        for fname in sorted(os.listdir(input_dir)):
+            if not any(fname.lower().endswith(ext) for ext in valid_exts):
+                continue
+            in_path = os.path.join(input_dir, fname)
+            out_path = os.path.join(output_dir, fname)
+            print(f"Processing {in_path} -> {out_path}")
+            try:
+                main(in_path, out_path)
+                f.write(f"{fname}: {final_verdict}\n")
+            except Exception as e:
+                print(f"Error processing {fname}: {e}")
