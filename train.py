@@ -31,6 +31,7 @@ CONDITIONING_STRENGTHS = {
 class FearDataset(Dataset):
     def __init__(self, root_dir, target_map, transform=None):
         self.samples = []
+        self.transform = transform
         if not os.path.exists(root_dir):
             raise FileNotFoundError(f"Dataset directory '{root_dir}' not found. Please create it!")
             
