@@ -5,6 +5,12 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 from PIL import Image
+import os
+
+INPUT_VIDEO_PATH = "/kaggle/input/path-to-your-video/video.mp4" 
+
+OUTPUT_VIDEO_PATH = "/kaggle/working/output_experiment.mp4"
+MODEL_PATH = "/kaggle/working/fear_model.pth"
 
 # ==========================================
 # 1. Hebbian Model Definition
@@ -42,20 +48,15 @@ neutral_detected = False
 detected_frame_countdown = -1
 identified_frame_countdown = -1
 
-# Initialize Model
 model = ImprovedHebbianFear(IMG_SIZE * IMG_SIZE)
 
-# Attempt to load trained weights
-try:
-    # If you saved your model in the previous script as 'fear_model.pth'
-    model.load_state_dict(torch.load("fear_model.pth"))
-    print("Loaded trained fear weights.")
-except FileNotFoundError:
-    print("WARNING: No trained model found. Using random weights (Running in simulation mode).")
-    # Initialize with random noise just so it runs
+if os.path.exists(MODEL_PATH):
+    model.load_state_dict(torch.load(MODEL_PATH))
+    print(f"Loaded trained fear weights from {MODEL_PATH}")
+else:
+    print("WARNING: No trained model found.")
     nn.init.normal_(model.weights, mean=0.5, std=0.1)
 
-# Preprocessing transform (Invert colors: Ink=1, BG=0)
 preprocess = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
     transforms.ToTensor(),
@@ -66,45 +67,29 @@ preprocess = transforms.Compose([
 # 3. Helper Functions
 # ==========================================
 def get_roi_patch(frame, center, size=64):
-    """
-    Extracts a square patch from the frame centered at 'center'.
-    This simulates the fovea focusing on a specific object.
-    """
     x, y = int(center[0]), int(center[1])
     r = size // 2
     
-    # Pad frame to handle edge cases
     h, w, _ = frame.shape
     padded = cv2.copyMakeBorder(frame, r, r, r, r, cv2.BORDER_CONSTANT, value=255)
     
-    # Adjust coordinates for padding
     x_pad, y_pad = x + r, y + r
     patch = padded[x_pad - r : x_pad + r, y_pad - r : y_pad + r]
     return patch
 
 def update_verdict(frame, focus_center):
-    """
-    Extracts the object at the focus point and asks the Hebbian model
-    if it is dangerous.
-    """
     global current_verdict, model
     
-    # 1. Get the visual patch (What is the eye looking at?)
     patch = get_roi_patch(frame, focus_center, size=IMG_SIZE)
     
-    # 2. Preprocess for PyTorch (BGR -> Gray -> PIL -> Tensor)
     gray_patch = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
     pil_img = Image.fromarray(gray_patch)
-    input_tensor = preprocess(pil_img).unsqueeze(0) # Add batch dim
+    input_tensor = preprocess(pil_img).unsqueeze(0) 
 
-    # 3. Neural Inference
     fear_score = model(input_tensor)
     new_verdict = model.check_thresholds(fear_score)
     
-    # Only update global state if the new verdict is "worse" or if we are refreshing
-    # (Simplified logic: just take the model's opinion)
     current_verdict = new_verdict
-    
     print(f"Foveating at {focus_center}: Fear Score {fear_score:.3f} -> {current_verdict}")
 
 def create_2d_gaussian_mask(image_shape, center, sigma_x, sigma_y, angle=0):
@@ -130,7 +115,6 @@ def mask_frame(frame):
     gauss_dist_y = 50
     got_gauss = False
 
-    # --- PERIPHERAL SCANNING ---
     for a in pos_angles:
         if got_gauss: break
         for d in pos_dists:
@@ -138,91 +122,70 @@ def mask_frame(frame):
             x = center[0] + int(d * np.cos(a_rad))
             y = center[1] + int(d * np.sin(a_rad))
             
-            # Boundary check
             if x < 10 or x > frame.shape[0]-10 or y < 10 or y > frame.shape[1]-10:
                 continue
 
-            # Check for black pixels in periphery
             patch = frame[x - 10 : x + 10, y - 10 : y + 10]
-            # Simple threshold: is there any dark ink?
             if np.any(patch < 50): 
                 got_gauss = True
-                gauss_center = ((center[0] + x) / 2, (center[1] + y) / 2) # Saccade towards it
+                gauss_center = ((center[0] + x) / 2, (center[1] + y) / 2) 
                 gauss_angle = a
-                gauss_dist_x = np.abs(x - gauss_center[0]) + 50 # Expand focus
+                gauss_dist_x = np.abs(x - gauss_center[0]) + 50 
                 gauss_dist_y = np.abs(y - gauss_center[1]) + 50
                 break
 
     global current_verdict, neutral_detected, detected_frame_countdown, identified_frame_countdown
 
-    # --- STATE MACHINE ---
-    
-    # STATE: NEUTRAL (Searching)
     if current_verdict == "NEUTRAL":
         if got_gauss and not neutral_detected:
-            # We saw something! Check what it is using the Model.
             update_verdict(frame, gauss_center)
-            
-            # If the model says it's neutral, ignore it for a while
             if current_verdict == "NEUTRAL":
                 neutral_detected = True
             elif current_verdict == "DETECTED":
                 detected_frame_countdown = 5
-        
-        # Apply Mask
         target_center = gauss_center if (got_gauss and not neutral_detected) else center
         sigma_x = gauss_dist_x if (got_gauss and not neutral_detected) else 50
         sigma_y = gauss_dist_y if (got_gauss and not neutral_detected) else 50
-        
         mask = create_2d_gaussian_mask(frame.shape[:2], target_center, sigma_x, sigma_y, gauss_angle)
 
-    # STATE: DETECTED (Suspicious - Double Check)
     elif current_verdict == "DETECTED":
         if detected_frame_countdown < 0:
-            # Timer ran out, double check the object
-            update_verdict(frame, center) # Assuming center has moved to object
+            update_verdict(frame, center)
             if current_verdict != "IDENTIFIED":
                 current_verdict = "NEUTRAL"
         else:
             detected_frame_countdown -= 1
-            
         mask = create_2d_gaussian_mask(frame.shape[:2], gauss_center, gauss_dist_x, gauss_dist_y, gauss_angle)
 
-    # STATE: IDENTIFIED (Fear Response - Lock On)
     elif current_verdict == "IDENTIFIED":
         if got_gauss:
             identified_frame_countdown = 10
-            # Keep verifying periodically
             update_verdict(frame, gauss_center)
         else:
             if identified_frame_countdown < 0:
                 current_verdict = "NEUTRAL"
             else:
                 identified_frame_countdown -= 1
-        
         mask = create_2d_gaussian_mask(frame.shape[:2], gauss_center, gauss_dist_x, gauss_dist_y, gauss_angle)
 
-    # Apply the calculated mask to the frame
     masked_img = frame.copy()
     for i in range(3):
         masked_img[:, :, i] = frame[:, :, i] * mask
 
     return masked_img
 
-def main(input_video_path, output_video_path):
-    cap = cv2.VideoCapture(input_video_path)
-    if not cap.isOpened():
-        print(f"Error: Could not open video {input_video_path}")
-        return
-
+if not os.path.exists(INPUT_VIDEO_PATH):
+    print(f"ERROR: Video not found at {INPUT_VIDEO_PATH}")
+else:
+    cap = cv2.VideoCapture(INPUT_VIDEO_PATH)
     fps = int(cap.get(cv2.CAP_PROP_FPS))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+    out = cv2.VideoWriter(OUTPUT_VIDEO_PATH, fourcc, fps, (width, height))
 
-    print(f"Processing {input_video_path}...")
+    print(f"Processing {INPUT_VIDEO_PATH}...")
     i = 0
     while True:
         ret, frame = cap.read()
@@ -238,10 +201,4 @@ def main(input_video_path, output_video_path):
 
     cap.release()
     out.release()
-    print(f"Done! Saved to {output_video_path}")
-
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python main.py <input_video.mp4>")
-    else:
-        main(sys.argv[1], "output.mp4")
+    print(f"Done! Video saved to {OUTPUT_VIDEO_PATH}")
