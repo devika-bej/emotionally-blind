@@ -10,7 +10,7 @@ import torchvision.transforms as transforms
 # ==========================================
 # 1. Configuration
 # ==========================================
-DATASET_DIR = "/kaggle/working/synthetic_fear_dataset"
+DATASET_DIR = "synthetic_fear_dataset"
 IMG_SIZE = 64
 LEARNING_RATE = 0.05
 EPOCHS = 8
