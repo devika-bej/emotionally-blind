@@ -97,5 +97,5 @@ if __name__ == "__main__":
     symbols = load_symbols("./symbols")
     for filename, symbol in zip(os.listdir("./symbols"), symbols):
         sym_name = filename[:-4]
-        for i in range(15):
+        for i in range(1, 31):
             generate_video(f"./ib_dataset/{sym_name}_{i}.mp4", symbol)
