@@ -8,7 +8,7 @@ video_length = 4
 fps = 30
 frame_w, frame_h = 1920, 1080
 bg_color = (255, 255, 255)
-symbol_time = 0.5
+symbol_time = 1
 
 pos_angles = [45, 135, 225, 315]
 pos_dists = [200, 400, 600]
